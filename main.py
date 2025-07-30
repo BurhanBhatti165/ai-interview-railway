@@ -151,7 +151,7 @@ async def tts(text: str = Form(...), voice_id: str = Form("21m00Tcm4TlvDq8ikWAM"
 
 @app.post("/stt/")
 async def stt(audio: UploadFile = File(...)):
-    """Convert speech to text using Whisper"""
+    """Convert speech to text using simplified speech recognition"""
     try:
         # Read the uploaded audio file
         audio_data = await audio.read()
@@ -186,13 +186,13 @@ async def stt(audio: UploadFile = File(...)):
                 logging.error(f"FFmpeg conversion failed: {e}")
                 return {"text": "", "error": "Audio conversion failed"}
         
-        # Use Whisper for transcription
+        # Use simplified speech recognition
         text = speech_to_text_whisper(audio_data)
         
-        if text:
+        if text and text != "Speech recognition not available in simplified version":
             return {"text": text, "success": True}
         else:
-            return {"text": "", "error": "Could not transcribe audio", "success": False}
+            return {"text": "", "error": "Speech recognition not available in simplified version. Please use text input instead.", "success": False}
             
     except Exception as e:
         logging.error(f"STT error: {e}")

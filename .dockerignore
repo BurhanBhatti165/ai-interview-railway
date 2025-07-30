@@ -45,6 +45,9 @@ Thumbs.db
 *.mp3
 *.wav
 *.mp4
+*.avi
+*.mov
+*.mkv
 
 # Database files (will be created at runtime)
 *.db
@@ -55,4 +58,48 @@ Thumbs.db
 
 # Temporary files
 temp_*
-tmp/ 
+tmp/
+
+# Documentation
+*.md
+README*
+
+# Test files
+tests/
+test_*
+*_test.py
+
+# Development files
+dev-requirements.txt
+.env
+.env.local
+.env.example
+
+# Large model files
+*.bin
+*.safetensors
+*.ckpt
+*.pth
+*.h5
+*.hdf5
+
+# Jupyter notebooks
+*.ipynb
+
+# Node modules (if any)
+node_modules/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Docker files
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml 

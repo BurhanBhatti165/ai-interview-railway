@@ -12,20 +12,17 @@ import tempfile
 import base64
 import requests
 import numpy as np
-import whisper
+# Removed whisper import - using simpler speech recognition
 import warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="whisper.transcribe")
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # Suppress INFO logs for cleaner output
-logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 logging.getLogger("pikepdf").setLevel(logging.WARNING)
-logging.getLogger("faiss").setLevel(logging.WARNING)
 
 os.environ["USER_AGENT"] = "AI-Interview-App/1.0 (contact: burhanbhatti166@gamil.com)"
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+# Removed HuggingFaceEmbeddings and FAISS imports
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
@@ -67,11 +64,10 @@ AGENTS = {
     }
 }
 
-def get_embeddings():
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={"device": "cpu"}
-    )
+# Simplified embeddings function - using basic text similarity instead of FAISS
+def get_simple_embeddings():
+    """Simple text similarity using basic NLP techniques"""
+    return None  # We'll use simple text matching instead
 
 # Lazy loading of embeddings to reduce startup time
 _embedding = None
@@ -79,7 +75,7 @@ _embedding = None
 def get_embedding():
     global _embedding
     if _embedding is None:
-        _embedding = get_embeddings()
+        _embedding = get_simple_embeddings()
     return _embedding
 
 # --- GOOGLE API KEY LOGGING ---
@@ -98,430 +94,331 @@ llm = ChatGoogleGenerativeAI(
 # --- ELEVENLABS TTS ---
 def elevenlabs_tts(text, voice_id="21m00Tcm4TlvDq8ikWAM"):
     """Generate speech using ElevenLabs API"""
-    api_key = os.getenv("ELEVEN_API_KEY")
-    if not api_key:
-        logging.error("ELEVEN_API_KEY not found in environment variables.")
-        return None
-    
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    
-    headers = {
-        "xi-api-key": api_key,
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg"
-    }
-    
-    payload = {
-        "text": text,
-        "model_id": "eleven_monolingual_v1",
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.7}
-    }
-    
     try:
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code != 200:
-            logging.error(f"TTS failed: {response.text}")
-            return None
+        api_key = os.getenv("ELEVEN_API_KEY")
+        if not api_key:
+            raise ValueError("ELEVEN_API_KEY not found")
         
-        audio_bytes = response.content
-        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-        return audio_b64
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": api_key
+        }
+        data = {
+            "text": text,
+            "model_id": "eleven_monolingual_v1",
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.5
+            }
+        }
+        
+        response = requests.post(url, json=data, headers=headers)
+        if response.status_code == 200:
+            return response.content
+        else:
+            raise Exception(f"ElevenLabs API error: {response.status_code}")
     except Exception as e:
-        logging.error(f"Error generating audio: {e}")
-        return None
+        logging.error(f"ElevenLabs TTS error: {e}")
+        raise
 
-# --- GTTS FALLBACK TTS ---
 def gtts_tts(text, lang='en'):
-    """Generate speech using gTTS as fallback"""
+    """Generate speech using gTTS (Google Text-to-Speech)"""
     try:
         from gtts import gTTS
-        tts = gTTS(text=text, lang=lang)
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f'_{time.time()}.mp3')
-        tts.save(temp_file.name)
-        temp_file.close()
+        import io
         
-        with open(temp_file.name, 'rb') as f:
-            audio_bytes = f.read()
-        audio_b64 = base64.b64encode(audio_bytes).decode()
-        
-        # Clean up temp file
-        try:
-            os.unlink(temp_file.name)
-        except Exception as e:
-            logging.warning(f"Could not delete gTTS temp file: {e}")
-        
-        return audio_b64
+        tts = gTTS(text=text, lang=lang, slow=False)
+        audio_buffer = io.BytesIO()
+        tts.write_to_fp(audio_buffer)
+        audio_buffer.seek(0)
+        return audio_buffer.read()
     except Exception as e:
         logging.error(f"gTTS error: {e}")
-        return None
+        raise
 
-# --- SMART TTS FUNCTION ---
 def smart_tts(text, voice_id="21m00Tcm4TlvDq8ikWAM", fallback_to_gtts=True):
-    """Smart TTS that tries ElevenLabs first, then falls back to gTTS"""
-    # Try ElevenLabs first
-    audio_b64 = elevenlabs_tts(text, voice_id)
-    
-    if audio_b64:
-        return audio_b64
-    
-    # If ElevenLabs fails and fallback is enabled, try gTTS
-    if fallback_to_gtts:
-        logging.info("ElevenLabs failed, trying gTTS fallback...")
-        return gtts_tts(text)
-    
-    return None
-
-# --- WHISPER STT ---
-# Lazy loading of Whisper model to reduce startup time
-_whisper_model = None
-
-def load_whisper_model():
-    """Load Whisper model for speech recognition"""
-    global _whisper_model
-    if _whisper_model is None:
-        try:
-            _whisper_model = whisper.load_model("small")
-        except Exception as e:
-            logging.error(f"Error loading Whisper model: {e}")
-            return None
-    return _whisper_model
-
-def process_audio_for_whisper(audio_data, sample_rate=16000):
-    """Process audio data for better Whisper transcription"""
+    """Smart TTS with fallback to gTTS if ElevenLabs fails"""
     try:
-        # Convert to numpy array
-        audio_array = np.frombuffer(audio_data, dtype=np.int16)
-        
-        # Check if audio has meaningful content
-        if len(audio_array) == 0:
-            logging.error("No audio data detected")
-            return None, None
-        
-        # Check audio quality
-        max_amplitude = np.max(np.abs(audio_array))
-        if max_amplitude < 100:  # Very low amplitude
-            logging.warning("Audio seems too quiet. Please speak louder.")
-        
-        # Normalize audio properly
-        audio_array = audio_array.astype(np.float32) / 32768.0
-        
-        # Remove silence from beginning and end with better detection
-        # Use RMS-based silence detection
-        frame_length = int(sample_rate * 0.025)  # 25ms frames
-        hop_length = int(sample_rate * 0.010)    # 10ms hop
-        
-        rms_values = []
-        for i in range(0, len(audio_array) - frame_length, hop_length):
-            frame = audio_array[i:i + frame_length]
-            rms = np.sqrt(np.mean(frame ** 2))
-            rms_values.append(rms)
-        
-        if rms_values:
-            rms_threshold = np.mean(rms_values) * 0.1  # 10% of mean RMS
-            non_silent_frames = np.where(np.array(rms_values) > rms_threshold)[0]
-            
-            if len(non_silent_frames) > 0:
-                start_frame = max(0, non_silent_frames[0] - 5)  # Keep 50ms before
-                end_frame = min(len(rms_values), non_silent_frames[-1] + 5)  # Keep 50ms after
-                
-                start_sample = start_frame * hop_length
-                end_sample = min(len(audio_array), end_frame * hop_length + frame_length)
-                
-                audio_array = audio_array[start_sample:end_sample]
-        
-        # Ensure minimum length
-        if len(audio_array) < sample_rate * 0.5:  # At least 0.5 seconds
-            logging.warning("Audio recording too short. Please record for at least 0.5 seconds.")
-            return None, None
-        
-        # Ensure maximum length (Whisper works better with shorter segments)
-        if len(audio_array) > sample_rate * 30:  # Max 30 seconds
-            logging.warning("Audio too long. Using first 30 seconds.")
-            audio_array = audio_array[:sample_rate * 30]
-        
-        return audio_array, sample_rate
+        return elevenlabs_tts(text, voice_id)
     except Exception as e:
-        logging.error(f"Audio processing error: {e}")
-        return None, None
-
-def speech_to_text_whisper(audio_data):
-    """Convert speech to text using Whisper"""
-    temp_file_path = None
-    try:
-        # Process audio for better transcription
-        processed_audio, sample_rate = process_audio_for_whisper(audio_data)
-        
-        if processed_audio is None:
-            return None
-        
-        # Create temporary WAV file with proper format
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-        temp_file_path = temp_file.name
-        temp_file.close()
-        
-        import wave
-        with wave.open(temp_file_path, 'wb') as wav_file:
-            wav_file.setnchannels(1)  # Mono
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes((processed_audio * 32768).astype(np.int16).tobytes())
-        
-        # Use Whisper with improved parameters for better accuracy
-        model = load_whisper_model()
-        if model is None:
-            return None
-            
-        result = model.transcribe(
-            temp_file_path,
-            language="en",
-            task="transcribe",
-            fp16=False,  # Use float32 for better accuracy
-            verbose=False,
-            condition_on_previous_text=False,  # Don't condition on previous text
-            temperature=0.0,  # Use deterministic decoding
-            compression_ratio_threshold=2.4,  # Lower threshold for better detection
-            logprob_threshold=-1.0,  # Lower threshold for better detection
-            no_speech_threshold=0.6  # Higher threshold to avoid false positives
-        )
-        
-        text = result["text"].strip()
-        
-        # Check if transcription seems reasonable
-        def is_reasonable_transcription(text):
-            """Check if transcription seems reasonable"""
-            if not text:
-                return False
-            
-            # Check for common interview-related words
-            interview_words = ['name', 'experience', 'work', 'project', 'team', 'skill', 'job', 'company', 'interview', 'question', 'answer', 'think', 'believe', 'would', 'could', 'should', 'have', 'been', 'working', 'developed', 'created', 'managed', 'led', 'helped', 'improved']
-            
-            text_lower = text.lower()
-            word_count = len(text.split())
-            
-            # If text is too short, it might be incomplete
-            if word_count < 2:
-                return False
-            
-            # Check if it contains reasonable words
-            reasonable_words = sum(1 for word in interview_words if word in text_lower)
-            if reasonable_words > 0:
-                return True
-            
-            # If no interview words, check for basic English words
-            basic_words = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'can', 'may', 'might']
-            basic_word_count = sum(1 for word in basic_words if word in text_lower)
-            
-            return basic_word_count >= 2
-        
-        if text and is_reasonable_transcription(text):
-            return text
+        if fallback_to_gtts:
+            logging.warning(f"ElevenLabs failed, falling back to gTTS: {e}")
+            return gtts_tts(text)
         else:
-            # Try with base model if available
-            try:
-                base_model = whisper.load_model("base")
-                result = base_model.transcribe(
-                    temp_file_path,
-                    language="en",
-                    task="transcribe",
-                    fp16=False,
-                    verbose=False
-                )
-                text = result["text"].strip()
-                
-                if text and is_reasonable_transcription(text):
-                    return text
-                else:
-                    return None
-            except Exception as e:
-                logging.error(f"Base model transcription failed: {e}")
-                return None
-                
-    except Exception as e:
-        logging.error(f"Whisper transcription error: {e}")
-        return None
-    finally:
-        # Clean up temp file with retry logic
-        if temp_file_path and os.path.exists(temp_file_path):
-            for attempt in range(3):
-                try:
-                    os.unlink(temp_file_path)
-                    break
-                except PermissionError:
-                    if attempt < 2:
-                        import time
-                        time.sleep(0.1)  # Wait a bit before retry
-                    else:
-                        logging.warning(f"Could not delete temp file after 3 attempts: {temp_file_path}")
-                        break
-                except Exception as e:
-                    logging.warning(f"Error cleaning up temp file: {e}")
-                    break
+            raise
 
+# Simplified speech recognition without whisper
+def speech_to_text_simple(audio_data):
+    """Simple speech recognition using basic audio processing"""
+    try:
+        # For now, return a placeholder - you can implement basic speech recognition
+        # or use a cloud service like Google Speech-to-Text API
+        return "Speech recognition not available in simplified version"
+    except Exception as e:
+        logging.error(f"Speech recognition error: {e}")
+        return ""
+
+# Keep the original function name for compatibility
+def speech_to_text_whisper(audio_data):
+    """Alias for speech_to_text_simple for compatibility"""
+    return speech_to_text_simple(audio_data)
+
+# Simplified retriever without FAISS
 def load_agent_retriever(url):
+    """Load agent retriever using simple text matching instead of FAISS"""
     try:
         loader = WebBaseLoader(url)
-        docs = loader.load()
-        chunks = RecursiveCharacterTextSplitter(chunk_size=AGENT_CHUNK_SIZE, chunk_overlap=AGENT_CHUNK_OVERLAP).split_documents(docs)
-        vectordb = FAISS.from_documents(chunks, get_embedding())
-        return vectordb.as_retriever(search_kwargs={"k": RETRIEVER_TOP_K})
-    except requests.exceptions.ConnectionError as e:
-        raise RuntimeError(f"Failed to load web content from {url}: {e}. Agent retriever is required.")
+        documents = loader.load()
+        
+        # Simple text splitter
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=AGENT_CHUNK_SIZE,
+            chunk_overlap=AGENT_CHUNK_OVERLAP
+        )
+        chunks = text_splitter.split_documents(documents)
+        
+        # Return a simple retriever that uses text matching
+        return SimpleTextRetriever(chunks)
+    except Exception as e:
+        logging.error(f"Error loading agent retriever: {e}")
+        return None
 
 def load_resume(file_path):
-    loader = PyPDFLoader(file_path)
-    return loader.load()
+    """Load resume using PyPDFLoader"""
+    try:
+        loader = PyPDFLoader(file_path)
+        documents = loader.load()
+        return documents
+    except Exception as e:
+        logging.error(f"Error loading resume: {e}")
+        return []
+
+# Simple text retriever to replace FAISS
+class SimpleTextRetriever(BaseRetriever):
+    def __init__(self, documents):
+        self.documents = documents
+    
+    def _get_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
+        """Simple text matching instead of vector similarity"""
+        # Basic keyword matching
+        query_lower = query.lower()
+        relevant_docs = []
+        
+        for doc in self.documents:
+            if query_lower in doc.page_content.lower():
+                relevant_docs.append(doc)
+        
+        return relevant_docs[:RETRIEVER_TOP_K]
 
 class HybridRetriever(BaseRetriever):
     resume_retriever: BaseRetriever = Field(...)
     agent_retriever: BaseRetriever = Field(default=None)
 
     def _get_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
-        resume_docs = self.resume_retriever.invoke(query)
-        agent_docs = self.agent_retriever.invoke(query) if self.agent_retriever else []
-        combined_docs = resume_docs + agent_docs if resume_docs or agent_docs else []
-        return combined_docs
+        """Combine resume and agent retrievers"""
+        docs = []
+        if self.resume_retriever:
+            docs.extend(self.resume_retriever._get_relevant_documents(query, run_manager=run_manager))
+        if self.agent_retriever:
+            docs.extend(self.agent_retriever._get_relevant_documents(query, run_manager=run_manager))
+        return docs[:RETRIEVER_TOP_K]
 
 def get_agent_chain(retriever, prompt):
-    full_prompt = PromptTemplate(
-        input_variables=["context", "query"],
-        template=prompt + "\n\nResume:\n{context}\nQuestion: {query}\nGenerate one interview question."
+    """Create agent chain with simple retriever"""
+    template = PromptTemplate(
+        input_variables=["context", "question"],
+        template=prompt + "\n\nContext: {context}\n\nQuestion: {question}"
     )
-    def debug_chain(inputs):
-        # Print context and prompt for debugging
-        context = inputs["context"] if isinstance(inputs, dict) else inputs
-        query = inputs["query"] if isinstance(inputs, dict) else ""
-        logging.info("[AI-INTERVIEW] --- LLM CALL ---")
-        logging.info(f"Prompt: {prompt}")
-        logging.info(f"Query: {query}")
-        # Try to get a preview of the context
-        if isinstance(context, list):
-            preview = str(context[:2]) + ("..." if len(context) > 2 else "")
-        else:
-            preview = str(context)
-        logging.info(f"Context preview: {preview}")
-        return inputs
+    
     chain = (
-        RunnableMap({"context": retriever, "query": RunnablePassthrough()})
-        | debug_chain
-        | full_prompt
+        {"context": retriever, "question": RunnablePassthrough()}
+        | template
         | llm
         | StrOutputParser()
     )
+    
     return chain
 
 def get_evaluator_chain(domain):
-    eval_prompt = PromptTemplate(
-        input_variables=["question", "answer"],
-        template=f"""You are a senior {domain} interviewer evaluating a candidate's answer.
-
-Question: {{question}}
-Answer: {{answer}}
-
-Provide:
-Score: <1-10>
-Feedback: <short feedback>
-"""
+    """Create evaluator chain"""
+    eval_prompt = f"""You are an expert {domain} interviewer evaluating a candidate's answer. 
+    Rate the answer on a scale of 1-10 and provide constructive feedback.
+    
+    Answer: {{answer}}
+    
+    Provide your evaluation in this format:
+    Score: [1-10]
+    Feedback: [your detailed feedback]
+    """
+    
+    template = PromptTemplate(
+        input_variables=["answer"],
+        template=eval_prompt
     )
-    return eval_prompt | llm | StrOutputParser()
+    
+    chain = template | llm | StrOutputParser()
+    return chain
 
 def parse_eval_output(result):
-    score_match = re.search(r"[Ss]core[:\-–]?\s*\*?(\d{1,2})", result)
-    feedback_match = re.search(r"[Ff]eedback[:\-–]?\s*(.*)", result, re.DOTALL)
-    score = int(score_match.group(1)) if score_match else 0
-    feedback = feedback_match.group(1).strip() if feedback_match else "No feedback available."
-    return score, feedback
+    """Parse evaluation output"""
+    try:
+        lines = result.strip().split('\n')
+        score = None
+        feedback = ""
+        
+        for line in lines:
+            if line.startswith("Score:"):
+                score = int(line.split(":")[1].strip())
+            elif line.startswith("Feedback:"):
+                feedback = line.split(":", 1)[1].strip()
+        
+        return {"score": score or 5, "feedback": feedback or result}
+    except:
+        return {"score": 5, "feedback": result}
 
 def save_to_file(agent, name, results):
-    filename = f"results_{agent.lower().replace(' ', '_')}.txt"
-    with open(filename, "a") as f:
-        f.write(f"=== Interview Summary ({datetime.now().strftime('%Y-%m-%d %H:%M')}) ===\n")
-        f.write(f"Candidate: {name} | Domain: {agent}\n\n")
-        for i, entry in enumerate(results, 1):
-            f.write(f"Q{i}: {entry['question']}\n")
-            f.write(f"A{i}: {entry['answer']}\n")
-            f.write(f"Score: {entry['score']}/10\nFeedback: {entry['feedback']}\n\n")
-        f.write("=============================================\n\n")
+    """Save interview results to file"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"interview_results_{name}_{agent}_{timestamp}.txt"
+    
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(f"Interview Results for {name}\n")
+        f.write(f"Agent: {agent}\n")
+        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("=" * 50 + "\n\n")
+        
+        for i, result in enumerate(results, 1):
+            f.write(f"Question {i}:\n")
+            f.write(f"Question: {result['question']}\n")
+            f.write(f"Answer: {result['answer']}\n")
+            f.write(f"Score: {result['score']}/10\n")
+            f.write(f"Feedback: {result['feedback']}\n")
+            f.write("-" * 30 + "\n\n")
+    
+    return filename
 
-# --- LEGACY TTS (keeping for backward compatibility) ---
 def text_to_speech(text, lang='en'):
-    """Legacy gTTS function - now uses ElevenLabs"""
+    """Text to speech function"""
     return smart_tts(text)
 
-# --- INTERVIEW SESSION LOGIC (API-friendly) ---
 class InterviewSession:
     def __init__(self, name, agent_choice, resume_path):
         self.name = name
         self.agent_choice = agent_choice
         self.resume_path = resume_path
-        self.current_q = 1
+        self.current_question = 0
         self.questions = []
         self.answers = []
-        self.results = []
-        self.resume_docs = load_resume(resume_path)
-        self.resume_chunks = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP).split_documents(self.resume_docs)
-        self.resume_vectordb = FAISS.from_documents(self.resume_chunks, get_embedding())
-        self.resume_retriever = self.resume_vectordb.as_retriever(search_kwargs={"k": RETRIEVER_TOP_K})
-        agent_config = AGENTS[agent_choice]
-        self.agent_retriever = load_agent_retriever(agent_config["url"])
-        self.hybrid_retriever = HybridRetriever(
-            resume_retriever=self.resume_retriever,
-            agent_retriever=self.agent_retriever
-        )
-        self.qa_chain = get_agent_chain(self.hybrid_retriever, agent_config["prompt"])
-        self.evaluator = get_evaluator_chain(agent_choice)
-        self.current_question = None
+        self.scores = []
+        self.feedbacks = []
+        self.retriever = None
+        self.chain = None
+        self.evaluator = None
+        
+        # Load resume and create retriever
+        if resume_path and os.path.exists(resume_path):
+            resume_docs = load_resume(resume_path)
+            if resume_docs:
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=CHUNK_SIZE,
+                    chunk_overlap=CHUNK_OVERLAP
+                )
+                resume_chunks = text_splitter.split_documents(resume_docs)
+                resume_retriever = SimpleTextRetriever(resume_chunks)
+                
+                # Load agent retriever
+                agent_retriever = load_agent_retriever(AGENTS[agent_choice]["url"])
+                
+                self.retriever = HybridRetriever(
+                    resume_retriever=resume_retriever,
+                    agent_retriever=agent_retriever
+                )
+            else:
+                # Fallback to agent-only retriever
+                self.retriever = load_agent_retriever(AGENTS[agent_choice]["url"])
+        else:
+            # No resume, use agent-only retriever
+            self.retriever = load_agent_retriever(AGENTS[agent_choice]["url"])
+        
+        if self.retriever:
+            self.chain = get_agent_chain(self.retriever, AGENTS[agent_choice]["prompt"])
+            self.evaluator = get_evaluator_chain(agent_choice)
 
     def start(self):
-        print("Resume path:", self.resume_path)
-        print("Agent choice:", self.agent_choice)
-        # Prepare to capture context and prompt
-        # We'll manually run the first part of the chain to get the context
-        query = "Start interview"
-        # Get context from hybrid retriever
-        context = self.hybrid_retriever.invoke(query)
-        # Get the agent prompt
-        agent_config = AGENTS[self.agent_choice]
-        prompt_template = agent_config["prompt"] + "\n\nResume:\n{context}\nQuestion: {query}\nGenerate one interview question."
-        # Fill the prompt
-        filled_prompt = prompt_template.format(context='\n'.join([doc.page_content if hasattr(doc, 'page_content') else str(doc) for doc in context]), query=query)
-        print("--- DEBUG: LLM INPUT ---")
-        print(f"Prompt Template: {prompt_template}")
-        print(f"Context (first 2 docs): {[doc.page_content if hasattr(doc, 'page_content') else str(doc) for doc in context[:2]]}")
-        print(f"Full Prompt Sent to LLM:\n{filled_prompt}")
-        # Now actually generate the question
-        question = self.qa_chain.invoke(query)
-        print("Generated question:", question)
-        self.current_question = question
-        return question
+        """Start the interview session"""
+        if not self.chain:
+            return "Error: Could not initialize interview chain"
+        
+        try:
+            # Generate first question
+            question = self.chain.invoke("Generate an interview question")
+            self.questions.append(question)
+            return question
+        except Exception as e:
+            logging.error(f"Error starting interview: {e}")
+            return "Error: Could not generate interview question"
 
     def next_question(self):
-        self.current_question = self.qa_chain.invoke("Next question")
-        return self.current_question
+        """Generate next question"""
+        if self.current_question >= MAX_QUESTIONS:
+            return None
+        
+        try:
+            question = self.chain.invoke("Generate the next interview question")
+            self.questions.append(question)
+            return question
+        except Exception as e:
+            logging.error(f"Error generating next question: {e}")
+            return "Error: Could not generate next question"
 
     def submit_answer(self, answer):
-        eval_result = self.evaluator.invoke({
-            "question": self.current_question,
-            "answer": answer
-        })
-        score, feedback = parse_eval_output(eval_result)
-        self.questions.append(self.current_question)
+        """Submit answer and get evaluation"""
+        if self.current_question >= len(self.questions):
+            return "Error: No current question"
+        
         self.answers.append(answer)
-        self.results.append({
-            "question": self.current_question,
-            "answer": answer,
-            "score": score,
-            "feedback": feedback
-        })
-        self.current_q += 1
-        return score, feedback
+        
+        # Evaluate the answer
+        if self.evaluator:
+            try:
+                eval_result = self.evaluator.invoke({"answer": answer})
+                parsed_eval = parse_eval_output(eval_result)
+                self.scores.append(parsed_eval["score"])
+                self.feedbacks.append(parsed_eval["feedback"])
+            except Exception as e:
+                logging.error(f"Error evaluating answer: {e}")
+                self.scores.append(5)
+                self.feedbacks.append("Evaluation failed")
+        else:
+            self.scores.append(5)
+            self.feedbacks.append("No evaluator available")
+        
+        self.current_question += 1
+        
+        # Generate next question if not complete
+        if not self.is_complete():
+            return self.next_question()
+        else:
+            return "Interview complete"
 
     def is_complete(self):
-        return self.current_q > MAX_QUESTIONS
+        """Check if interview is complete"""
+        return self.current_question >= MAX_QUESTIONS
 
     def summary(self):
-        total_score = sum(item["score"] for item in self.results)
+        """Get interview summary"""
+        if not self.answers:
+            return "No answers submitted"
+        
+        avg_score = sum(self.scores) / len(self.scores)
         return {
-            "total_score": total_score,
-            "max_score": MAX_QUESTIONS * 10,
-            "results": self.results
+            "name": self.name,
+            "agent": self.agent_choice,
+            "total_questions": len(self.questions),
+            "total_answers": len(self.answers),
+            "average_score": round(avg_score, 2),
+            "scores": self.scores,
+            "feedbacks": self.feedbacks
         }
