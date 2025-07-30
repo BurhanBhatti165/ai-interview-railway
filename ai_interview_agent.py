@@ -23,14 +23,12 @@ os.environ["USER_AGENT"] = "AI-Interview-App/1.0 (contact: burhanbhatti166@gamil
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 # Removed HuggingFaceEmbeddings and FAISS imports
-from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
 from langchain_core.runnables import RunnableSequence, RunnablePassthrough, RunnableMap
 from langchain_core.output_parsers import StrOutputParser
-from langchain_community.document_loaders import WebBaseLoader
 
 # --- CONFIG ---
 MAX_QUESTIONS = 3
@@ -169,15 +167,25 @@ def speech_to_text_whisper(audio_data):
 def load_agent_retriever(url):
     """Load agent retriever using simple text matching instead of FAISS"""
     try:
-        loader = WebBaseLoader(url)
-        documents = loader.load()
+        # Simple web scraping without WebBaseLoader
+        import requests
+        from bs4 import BeautifulSoup
+        
+        response = requests.get(url)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Extract text content
+        text_content = soup.get_text()
+        
+        # Create a simple document
+        doc = Document(page_content=text_content, metadata={"source": url})
         
         # Simple text splitter
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=AGENT_CHUNK_SIZE,
             chunk_overlap=AGENT_CHUNK_OVERLAP
         )
-        chunks = text_splitter.split_documents(documents)
+        chunks = text_splitter.split_documents([doc])
         
         # Return a simple retriever that uses text matching
         return SimpleTextRetriever(chunks)
@@ -186,11 +194,19 @@ def load_agent_retriever(url):
         return None
 
 def load_resume(file_path):
-    """Load resume using PyPDFLoader"""
+    """Load resume using simple PDF processing"""
     try:
-        loader = PyPDFLoader(file_path)
-        documents = loader.load()
-        return documents
+        import pypdf
+        
+        with open(file_path, 'rb') as file:
+            pdf_reader = pypdf.PdfReader(file)
+            text_content = ""
+            
+            for page in pdf_reader.pages:
+                text_content += page.extract_text() + "\n"
+            
+            doc = Document(page_content=text_content, metadata={"source": file_path})
+            return [doc]
     except Exception as e:
         logging.error(f"Error loading resume: {e}")
         return []
