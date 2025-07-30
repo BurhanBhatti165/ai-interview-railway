@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
 passlib[bcrypt]
 python-jose
@@ -29,3 +29,5 @@ soundfile
 elevenlabs
 openai-whisper
 numpy
+torch
+torchvision

@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import tempfile
 import subprocess
 import logging
+import time
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -23,11 +24,14 @@ def get_db():
     finally:
         db.close()
 
-app = FastAPI()
+app = FastAPI(title="AI Interview API", version="1.0.0")
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize database tables on startup"""
+    logger.info("Starting AI Interview API...")
+    start_time = time.time()
+    
     try:
         # Create tables
         Base.metadata.create_all(bind=engine)
@@ -36,11 +40,19 @@ async def startup_event():
         logger.error(f"Failed to create database tables: {e}")
         # Don't raise the exception, just log it
         # This allows the app to start even if database creation fails
+    
+    # Log environment variables (without exposing sensitive data)
+    logger.info(f"GOOGLE_API_KEY present: {'GOOGLE_API_KEY' in os.environ}")
+    logger.info(f"ELEVEN_API_KEY present: {'ELEVEN_API_KEY' in os.environ}")
+    logger.info(f"PORT: {os.environ.get('PORT', 'Not set')}")
+    
+    startup_time = time.time() - start_time
+    logger.info(f"Startup completed in {startup_time:.2f} seconds")
 
 # Add this CORS middleware setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Only allow React dev server
+    allow_origins=["*"],  # Allow all origins for Railway deployment
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -49,7 +61,7 @@ app.add_middleware(
 # Keep your original endpoints
 @app.get("/")
 def root() -> dict[str, str]:
-    return {"message": "Hello"}
+    return {"message": "AI Interview API is running", "status": "healthy"}
 
 @app.get("/health")
 def health_check() -> dict[str, str]:

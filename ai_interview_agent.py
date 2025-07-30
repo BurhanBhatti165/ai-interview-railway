@@ -73,7 +73,14 @@ def get_embeddings():
         model_kwargs={"device": "cpu"}
     )
 
-embedding = get_embeddings()
+# Lazy loading of embeddings to reduce startup time
+_embedding = None
+
+def get_embedding():
+    global _embedding
+    if _embedding is None:
+        _embedding = get_embeddings()
+    return _embedding
 
 # --- GOOGLE API KEY LOGGING ---
 google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -165,13 +172,19 @@ def smart_tts(text, voice_id="21m00Tcm4TlvDq8ikWAM", fallback_to_gtts=True):
     return None
 
 # --- WHISPER STT ---
+# Lazy loading of Whisper model to reduce startup time
+_whisper_model = None
+
 def load_whisper_model():
     """Load Whisper model for speech recognition"""
-    try:
-        return whisper.load_model("small")
-    except Exception as e:
-        logging.error(f"Error loading Whisper model: {e}")
-        return None
+    global _whisper_model
+    if _whisper_model is None:
+        try:
+            _whisper_model = whisper.load_model("small")
+        except Exception as e:
+            logging.error(f"Error loading Whisper model: {e}")
+            return None
+    return _whisper_model
 
 def process_audio_for_whisper(audio_data, sample_rate=16000):
     """Process audio data for better Whisper transcription"""
@@ -349,7 +362,7 @@ def load_agent_retriever(url):
         loader = WebBaseLoader(url)
         docs = loader.load()
         chunks = RecursiveCharacterTextSplitter(chunk_size=AGENT_CHUNK_SIZE, chunk_overlap=AGENT_CHUNK_OVERLAP).split_documents(docs)
-        vectordb = FAISS.from_documents(chunks, embedding)
+        vectordb = FAISS.from_documents(chunks, get_embedding())
         return vectordb.as_retriever(search_kwargs={"k": RETRIEVER_TOP_K})
     except requests.exceptions.ConnectionError as e:
         raise RuntimeError(f"Failed to load web content from {url}: {e}. Agent retriever is required.")
@@ -446,7 +459,7 @@ class InterviewSession:
         self.results = []
         self.resume_docs = load_resume(resume_path)
         self.resume_chunks = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP).split_documents(self.resume_docs)
-        self.resume_vectordb = FAISS.from_documents(self.resume_chunks, embedding)
+        self.resume_vectordb = FAISS.from_documents(self.resume_chunks, get_embedding())
         self.resume_retriever = self.resume_vectordb.as_retriever(search_kwargs={"k": RETRIEVER_TOP_K})
         agent_config = AGENTS[agent_choice]
         self.agent_retriever = load_agent_retriever(agent_config["url"])
